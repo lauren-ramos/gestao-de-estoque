@@ -1,4 +1,4 @@
-import { getInsumosFromSienge, clearInsumosCache, COST_CENTER_IDS, type SiengeResource, type SiengeMovimentacao } from './sienge';
+import { getInsumosFromSienge, clearInsumosCache, type SiengeResource, type SiengeMovimentacao } from './sienge';
 import { syncSiengeInsumos, syncSiengeMovimentos } from './database';
 
 export type SyncProgressCallback = (msg: string, current: number, total: number) => void;
@@ -9,7 +9,7 @@ export interface SyncResult {
   erros: string[];
 }
 
-// ─── Busca todas as movimentações de um centro de custo (paginado) ────────────
+// ─── Credenciais ──────────────────────────────────────────────────────────────
 
 const BASE_URL = process.env.EXPO_PUBLIC_SIENGE_BASE_URL ?? 'https://api.sienge.com.br';
 const SUBDOMAIN = process.env.EXPO_PUBLIC_SIENGE_SUBDOMAIN ?? '';
@@ -19,6 +19,8 @@ const SENHA     = process.env.EXPO_PUBLIC_SIENGE_SENHA ?? '';
 function authHeader() {
   return { Authorization: `Basic ${btoa(`${USUARIO}:${SENHA}`)}` };
 }
+
+// ─── Tipos ────────────────────────────────────────────────────────────────────
 
 interface RawMov {
   id: number;
@@ -44,19 +46,20 @@ function parseDate(d: string | Record<string, number>): string {
   return String(d);
 }
 
-async function fetchAllMovsForCostCenter(
-  costCenterId: number,
+// ─── Busca global de movimentações (sem filtro de centro de custo) ────────────
+
+async function fetchAllMovsGlobal(
   onPage: (fetched: number, total: number) => void,
 ): Promise<Map<string, SiengeMovimentacao[]>> {
   const grouped = new Map<string, SiengeMovimentacao[]>();
-  const LIMIT = 200;
+  const LIMIT = 100;
   let offset = 0;
   let total = Infinity;
 
   while (offset < total) {
-    const url = `${BASE_URL}/${SUBDOMAIN}/public/api/v1/inventory-movements?costCenterId=${costCenterId}&limit=${LIMIT}&offset=${offset}`;
+    const url = `${BASE_URL}/${SUBDOMAIN}/public/api/v1/inventory-movements?limit=${LIMIT}&offset=${offset}`;
     const res = await fetch(url, { headers: authHeader() });
-    if (!res.ok) throw new Error(`Sienge ${res.status}`);
+    if (!res.ok) throw new Error(`Sienge ${res.status}: ${await res.text()}`);
 
     const data: PaginatedResponse = await res.json();
     if (data.resultSetMetadata?.count != null) total = data.resultSetMetadata.count;
@@ -76,7 +79,7 @@ async function fetchAllMovsForCostCenter(
         data: parseDate(m.movementDate),
         documento: [m.documentId, m.movementNumber].filter(Boolean).join(' / '),
         fornecedor: m.supplierName ?? '',
-        costCenterId: m.costCenterId ?? costCenterId,
+        costCenterId: m.costCenterId ?? 0,
       });
     }
 
@@ -94,7 +97,7 @@ export async function syncAllFromSienge(onProgress: SyncProgressCallback): Promi
   const erros: string[] = [];
   let totalMovimentos = 0;
 
-  // 1. Insumos
+  // 1. Insumos via bulk-data (itera obras 1, 2, 3... até 3 consecutivos sem dados)
   onProgress('Buscando insumos do Sienge...', 0, 100);
   clearInsumosCache();
   const insumos = await getInsumosFromSienge(true);
@@ -109,35 +112,33 @@ export async function syncAllFromSienge(onProgress: SyncProgressCallback): Promi
     insumoMap.set(`${r.resourceId}.${r.detailId != null ? r.detailId : ''}`, r);
   }
 
-  // 2. Movimentações por centro de custo
-  const totalCC = COST_CENTER_IDS.length;
-  onProgress(`Buscando movimentações (${totalCC} centro${totalCC > 1 ? 's' : ''} de custo)...`, 10, 100);
+  // 2. Movimentações — endpoint global, sem filtro por centro de custo
+  onProgress('Buscando movimentações do Sienge...', 15, 100);
 
-  for (let ci = 0; ci < totalCC; ci++) {
-    const costCenterId = COST_CENTER_IDS[ci];
-    const baseProgress = 10 + Math.round((ci / totalCC) * 85);
+  try {
+    const grouped = await fetchAllMovsGlobal((fetched, total) => {
+      const pct = 15 + Math.round((fetched / total) * 80);
+      onProgress(`Movimentações: ${fetched.toLocaleString('pt-BR')}/${total.toLocaleString('pt-BR')}...`, pct, 100);
+    });
 
-    try {
-      const grouped = await fetchAllMovsForCostCenter(costCenterId, (fetched, total) => {
-        const pct = baseProgress + Math.round((fetched / total) * (85 / totalCC));
-        onProgress(`CC ${costCenterId}: ${fetched}/${total} movimentações...`, pct, 100);
-      });
+    onProgress('Salvando movimentações no banco...', 95, 100);
 
-      // Hermes: não suporta for...of em Map — usa Array.from
-      const entries = Array.from(grouped.entries());
-      for (let ei = 0; ei < entries.length; ei++) {
-        const key = entries[ei][0];
-        const movs = entries[ei][1];
-        const resource = insumoMap.get(key);
-        if (!resource) continue;
-        await syncSiengeMovimentos(movs, resource.name, resource.resourceId, resource.detailId);
-        totalMovimentos += movs.length;
-      }
-    } catch (err) {
-      const msg = `Centro de custo ${costCenterId}: ${String(err)}`;
-      erros.push(msg);
-      console.warn('[Sync]', msg);
+    // Hermes: usa Array.from em vez de for...of em Map
+    const entries = Array.from(grouped.entries());
+    for (let ei = 0; ei < entries.length; ei++) {
+      const key = entries[ei][0];
+      const movs = entries[ei][1];
+      const resource = insumoMap.get(key);
+      const nome = resource?.name ?? key;
+      const resourceId = resource?.resourceId ?? Number(key.split('.')[0]);
+      const detailId = resource?.detailId ?? (key.includes('.') ? Number(key.split('.')[1]) || null : null);
+      await syncSiengeMovimentos(movs, nome, resourceId, detailId);
+      totalMovimentos += movs.length;
     }
+  } catch (err) {
+    const msg = `Movimentações: ${String(err)}`;
+    erros.push(msg);
+    console.warn('[Sync]', msg);
   }
 
   onProgress('Sincronização concluída!', 100, 100);

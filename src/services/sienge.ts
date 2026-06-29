@@ -3,16 +3,11 @@ const SUBDOMAIN = process.env.EXPO_PUBLIC_SIENGE_SUBDOMAIN ?? '';
 const USUARIO = process.env.EXPO_PUBLIC_SIENGE_USUARIO ?? '';
 const SENHA = process.env.EXPO_PUBLIC_SIENGE_SENHA ?? '';
 
-const COST_CENTER_IDS: number[] = (process.env.EXPO_PUBLIC_SIENGE_COST_CENTER_IDS ?? '1')
+// Mantido apenas para compatibilidade com sync.ts legado (movimentações)
+export const COST_CENTER_IDS: number[] = (process.env.EXPO_PUBLIC_SIENGE_COST_CENTER_IDS ?? '1')
   .split(',')
-  .map((s) => Number(s.trim()))
+  .map((s: string) => Number(s.trim()))
   .filter(Boolean);
-
-// Exporta para uso em outros módulos
-export { COST_CENTER_IDS };
-
-console.log(`[Sienge] Centros de custo configurados: ${COST_CENTER_IDS.join(', ')}`);
-console.log('[Sienge] Para buscar mais obras, adicione os IDs em EXPO_PUBLIC_SIENGE_COST_CENTER_IDS no .env');
 
 // ─── Tipos públicos ───────────────────────────────────────────────────────────
 
@@ -47,6 +42,10 @@ function hasCredentials(): boolean {
 
 function apiUrl(path: string): string {
   return `${BASE_URL}/${SUBDOMAIN}/public/api/v1${path}`;
+}
+
+function bulkDataUrl(path: string): string {
+  return `${BASE_URL}/${SUBDOMAIN}/public/api/bulk-data/v1${path}`;
 }
 
 function authHeader(): Record<string, string> {
@@ -93,16 +92,24 @@ function extractArray<T>(raw: unknown): T[] {
   return [];
 }
 
-// ─── Estoque de Insumos ───────────────────────────────────────────────────────
+// ─── Insumos via bulk-data (por obra/building) ───────────────────────────────
 
-interface StockItem {
-  resourceId: number;
-  resourceName: string;
+// Campos retornados pelo endpoint /bulk-data/v1/building/resources (confirmados por log)
+interface BulkResourceItem {
+  id?: number;
+  description?: string;        // nome do insumo
+  unitOfMeasure?: string;
   detailId?: number | null;
   detailDescription?: string | null;
-  quantity: number;
-  unitOfMeasure: string;
+  isActive?: boolean;
+  // Fallbacks para compatibilidade
+  resourceId?: number;
+  resourceName?: string;
+  name?: string;
+  unit?: string;
 }
+
+const BULK_PARAMS = 'startDate=2020-01-01&endDate=2050-12-31&includeDisbursement=false&bdi=0.00&laborBurden=0.00';
 
 let _cachedInsumos: SiengeResource[] | null = null;
 
@@ -115,60 +122,73 @@ export async function getInsumosFromSienge(forceRefresh = false): Promise<Sienge
   if (_cachedInsumos && !forceRefresh) return _cachedInsumos;
 
   const all: SiengeResource[] = [];
-  const LIMIT = 500; // limite alto para reduzir chamadas
+  let buildingId = 1;
+  let consecutiveEmpty = 0;
+  const MAX_EMPTY = 3; // para após 3 obras consecutivas sem dados
 
-  for (let i = 0; i < COST_CENTER_IDS.length; i++) {
-    const costCenterId = COST_CENTER_IDS[i];
+  while (consecutiveEmpty < MAX_EMPTY && buildingId <= 500) {
     try {
-      let offset = 0;
-      let total = Infinity;
+      const url = `${bulkDataUrl('/building/resources')}?buildingId=${buildingId}&${BULK_PARAMS}`;
+      const res = await fetch(url, { headers: authHeader() });
 
-      while (offset < total) {
-        const raw = await getRequest<unknown>(
-          `/stock-inventories/${costCenterId}/items?limit=${LIMIT}&offset=${offset}`,
-        );
-        if (!raw) break;
-
-        const meta = (raw as Record<string, unknown>).resultSetMetadata as
-          | { count: number }
-          | undefined;
-        if (meta?.count != null) total = meta.count;
-
-        const items = extractArray<StockItem>(raw);
-        if (items.length === 0) break;
-
-        for (let j = 0; j < items.length; j++) {
-          const item = items[j];
-          const detailId = item.detailId ?? null;
-          const resourceName = item.resourceName.trim();
-          const detailDescription = item.detailDescription?.trim() ?? null;
-
-          all.push({
-            resourceId: item.resourceId,
-            resourceName,
-            detailId,
-            detailDescription,
-            code: detailId != null
-              ? `${item.resourceId}.${detailId}`
-              : String(item.resourceId),
-            name: detailDescription
-              ? `${resourceName} - ${detailDescription}`
-              : resourceName,
-            unit: item.unitOfMeasure,
-            quantity: item.quantity,
-            costCenterId,
-          });
-        }
-
-        offset += items.length;
-        if (items.length < LIMIT) break;
+      if (res.status === 404) {
+        consecutiveEmpty++;
+        buildingId++;
+        continue;
       }
+      if (!res.ok) {
+        throw new Error(`Sienge ${res.status}`);
+      }
+
+      const data = await res.json();
+      const items = extractArray<BulkResourceItem>(data);
+
+      if (items.length === 0) {
+        consecutiveEmpty++;
+        buildingId++;
+        continue;
+      }
+
+      consecutiveEmpty = 0; // encontrou dados, reseta o contador
+
+      for (let j = 0; j < items.length; j++) {
+        const item = items[j];
+        // Campos confirmados pelo log da API bulk-data:
+        // id → resourceId | description → nome | detailId | detailDescription | unitOfMeasure
+        // Obs: não há campo de quantidade neste endpoint (é orçamento, não estoque)
+        const resourceId = item.id ?? item.resourceId ?? 0;
+        const resourceName = (item.description ?? item.resourceName ?? item.name ?? '').trim();
+        const detailId = item.detailId ?? null;
+        const detailDescription = item.detailDescription?.trim() ?? null;
+        const quantity = 0; // bulk-data não retorna quantidade de estoque
+        const unit = item.unitOfMeasure ?? item.unit ?? '';
+
+        all.push({
+          resourceId,
+          resourceName,
+          detailId,
+          detailDescription,
+          code: detailId != null ? `${resourceId}.${detailId}` : String(resourceId),
+          name: detailDescription ? `${resourceName} - ${detailDescription}` : resourceName,
+          unit,
+          quantity,
+          costCenterId: buildingId,
+        });
+      }
+
+      buildingId++;
     } catch (err) {
-      console.warn(`[Sienge] Falha ao buscar centro de custo ${costCenterId}:`, err);
+      if (String(err).includes('404')) {
+        consecutiveEmpty++;
+      } else {
+        console.warn(`[Sienge] Falha ao buscar obra ${buildingId}:`, err);
+        consecutiveEmpty++;
+      }
+      buildingId++;
     }
   }
 
-  // Agrega por code: soma quantidades entre centros de custo
+  // Agrega por code: soma quantidades entre obras
   const map = new Map<string, SiengeResource>();
   for (let i = 0; i < all.length; i++) {
     const r = all[i];
@@ -266,7 +286,9 @@ export async function getSiengeMovimentos(
         if (items.length < LIMIT) break; // última página
       }
     } catch (err) {
-      console.warn(`[Sienge] Falha ao buscar movimentações centro ${costCenterId}:`, err);
+      if (!String(err).includes('404')) {
+        console.warn(`[Sienge] Falha ao buscar movimentações centro ${costCenterId}:`, err);
+      }
     }
   }
 

@@ -2,7 +2,7 @@ import React, { useEffect, useState, useCallback, useMemo } from 'react';
 import {
   View,
   Text,
-  FlatList,
+  ScrollView,
   StyleSheet,
   TouchableOpacity,
   RefreshControl,
@@ -50,16 +50,6 @@ export default function MovimentacaoScreen() {
     const q = search.toLowerCase().trim();
     return movs.filter((m) => m.insumo_nome?.toLowerCase().includes(q));
   }, [movs, search]);
-
-  const renderItem = useCallback(
-    ({ item }: { item: Movimentacao }) => <MovRow item={item} />,
-    [],
-  );
-
-  const renderSeparator = useCallback(
-    () => <View style={styles.separator} />,
-    [],
-  );
 
   return (
     <SafeAreaView style={styles.safe} edges={['top']}>
@@ -124,9 +114,8 @@ export default function MovimentacaoScreen() {
             <Text style={styles.col}>Data</Text>
             <Text style={styles.col}>Movimentação</Text>
           </View>
-          <FlatList
-            data={filtered}
-            keyExtractor={(item) => item.id}
+          <ScrollView
+            style={{ flex: 1 }}
             refreshControl={
               <RefreshControl
                 refreshing={refreshing}
@@ -134,17 +123,23 @@ export default function MovimentacaoScreen() {
                 tintColor={Colors.primary}
               />
             }
-            ListEmptyComponent={
+          >
+            {filtered.length === 0 ? (
               <View style={styles.empty}>
                 <Ionicons name="swap-vertical-outline" size={36} color={Colors.border} />
                 <Text style={styles.emptyText}>
                   {search ? 'Nenhuma movimentação encontrada' : 'Nenhuma movimentação registrada'}
                 </Text>
               </View>
-            }
-            renderItem={renderItem}
-            ItemSeparatorComponent={renderSeparator}
-          />
+            ) : (
+              filtered.map((item, idx) => (
+                <React.Fragment key={item.id}>
+                  {idx > 0 && <View style={styles.separator} />}
+                  <MovRow item={item} />
+                </React.Fragment>
+              ))
+            )}
+          </ScrollView>
         </Card>
       )}
     </SafeAreaView>

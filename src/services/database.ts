@@ -13,12 +13,59 @@ import type { SiengeResource, SiengeMovimentacao } from './sienge';
 // ─── Insumos ──────────────────────────────────────────────────────────────────
 
 export async function getInsumos(): Promise<Insumo[]> {
+  // PAGE=50 fica abaixo de qualquer limite do servidor (Supabase max-rows padrão = 1000).
+  // Paramos quando o servidor retornar menos de PAGE rows (última página).
+  const PAGE = 50;
+  const all: Insumo[] = [];
+  let from = 0;
+
+  for (let guard = 0; guard < 1000; guard++) {
+    const { data, error } = await supabase
+      .from('insumos')
+      .select('*')
+      .order('sienge_code', { ascending: true, nullsFirst: false })
+      .range(from, from + PAGE - 1);
+    if (error) throw error;
+    if (!data || data.length === 0) break;
+    for (let i = 0; i < data.length; i++) all.push(data[i]);
+    if (data.length < PAGE) break; // última página
+    from += PAGE;
+  }
+
+  return all;
+}
+
+export async function getInsumosByResourceId(resourceId: number): Promise<Insumo[]> {
   const { data, error } = await supabase
     .from('insumos')
     .select('*')
-    .order('nome');
+    .eq('sienge_resource_id', resourceId)
+    .order('sienge_detail_id', { ascending: true, nullsFirst: true });
   if (error) throw error;
   return data ?? [];
+}
+
+export async function searchInsumos(query: string): Promise<Insumo[]> {
+  const PAGE = 50;
+  const all: Insumo[] = [];
+  const filter = `nome.ilike.%${query}%,sienge_code.ilike.%${query}%,detalhe.ilike.%${query}%`;
+  let from = 0;
+
+  for (let guard = 0; guard < 1000; guard++) {
+    const { data, error } = await supabase
+      .from('insumos')
+      .select('*')
+      .or(filter)
+      .order('sienge_code', { ascending: true, nullsFirst: false })
+      .range(from, from + PAGE - 1);
+    if (error) throw error;
+    if (!data || data.length === 0) break;
+    for (let i = 0; i < data.length; i++) all.push(data[i]);
+    if (data.length < PAGE) break;
+    from += PAGE;
+  }
+
+  return all;
 }
 
 export async function upsertInsumo(insumo: Partial<Insumo>): Promise<Insumo> {
@@ -33,32 +80,63 @@ export async function upsertInsumo(insumo: Partial<Insumo>): Promise<Insumo> {
 
 // ─── Movimentações ────────────────────────────────────────────────────────────
 
-export async function getMovimentacoes(limit = 15): Promise<Movimentacao[]> {
-  const { data, error } = await supabase
-    .from('movimentacoes')
-    .select('*')
-    .order('data', { ascending: false })
-    .limit(limit);
-  if (error) throw error;
-  return data ?? [];
+export async function getMovimentacoes(limit = 5000): Promise<Movimentacao[]> {
+  const PAGE = 50;
+  const all: Movimentacao[] = [];
+  let from = 0;
+
+  for (let guard = 0; guard < 200; guard++) {
+    const { data, error } = await supabase
+      .from('movimentacoes')
+      .select('*')
+      .order('data', { ascending: false })
+      .order('id', { ascending: true })
+      .range(from, from + PAGE - 1);
+    if (error) throw error;
+    if (!data || data.length === 0) break;
+    for (let i = 0; i < data.length; i++) all.push(data[i]);
+    if (data.length < PAGE || all.length >= limit) break;
+    from += PAGE;
+  }
+
+  // Remove duplicatas pelo id (proteção contra paginação instável ou rows duplicados no banco)
+  const seen = new Set<string>();
+  const unique: Movimentacao[] = [];
+  for (let i = 0; i < all.length; i++) {
+    if (!seen.has(all[i].id)) {
+      seen.add(all[i].id);
+      unique.push(all[i]);
+    }
+  }
+  return unique;
 }
 
-// Busca movimentações do banco por resourceId/detailId do Sienge (após sync)
 export async function getMovimentacoesBySiengeResource(
   resourceId: number,
   detailId: number | null,
 ): Promise<Movimentacao[]> {
-  let query = supabase
-    .from('movimentacoes')
-    .select('*')
-    .eq('sienge_resource_id', resourceId)
-    .order('data', { ascending: false });
-  if (detailId != null) {
-    query = query.eq('sienge_detail_id', detailId);
+  const PAGE = 50;
+  const all: Movimentacao[] = [];
+  let from = 0;
+
+  for (let guard = 0; guard < 500; guard++) {
+    let q = supabase
+      .from('movimentacoes')
+      .select('*')
+      .eq('sienge_resource_id', resourceId)
+      .order('data', { ascending: false })
+      .order('id', { ascending: true })
+      .range(from, from + PAGE - 1);
+    if (detailId != null) q = q.eq('sienge_detail_id', detailId);
+    const { data, error } = await q;
+    if (error) throw error;
+    if (!data || data.length === 0) break;
+    for (let i = 0; i < data.length; i++) all.push(data[i]);
+    if (data.length < PAGE) break;
+    from += PAGE;
   }
-  const { data, error } = await query;
-  if (error) throw error;
-  return data ?? [];
+
+  return all;
 }
 
 export async function getMovimentacoesByInsumoNome(nome: string): Promise<Movimentacao[]> {
@@ -194,31 +272,46 @@ export async function syncSiengeMovimentos(
 // ─── Dashboard ────────────────────────────────────────────────────────────────
 
 export async function getDashboardStats(): Promise<DashboardStats> {
-  const [insumosRes, movRes] = await Promise.all([
-    supabase.from('insumos').select('id, nome, quantidade_atual'),
-    supabase
-      .from('movimentacoes')
-      .select('insumo_nome, tipo')
-      .eq('tipo', 'saida'),
-  ]);
+  const PAGE = 50;
 
-  const insumos = insumosRes.data ?? [];
-  const movs = movRes.data ?? [];
+  // Total de insumos cadastrados (count preciso, não limitado por max-rows)
+  const { count: totalCount } = await supabase
+    .from('insumos')
+    .select('*', { count: 'exact', head: true });
+  const totalInsumos = totalCount ?? 0;
 
-  const totalInsumos = insumos.length;
-
-  // Soma total das quantidades em estoque
+  // Soma total das quantidades — pagina para superar o limite de 1000 do servidor
   let totalQtd = 0;
-  for (let i = 0; i < insumos.length; i++) {
-    totalQtd += insumos[i].quantidade_atual || 0;
+  let from = 0;
+  for (let guard = 0; guard < 1000; guard++) {
+    const { data } = await supabase
+      .from('insumos')
+      .select('quantidade_atual')
+      .range(from, from + PAGE - 1);
+    if (!data || data.length === 0) break;
+    for (let i = 0; i < data.length; i++) totalQtd += data[i].quantidade_atual || 0;
+    if (data.length < PAGE) break;
+    from += PAGE;
   }
 
-  // Insumo com mais saídas (por número de movimentações, não por quantidade)
+  // Insumo com mais saídas (pagina movimentacoes também)
   const freq: Record<string, number> = {};
-  for (let i = 0; i < movs.length; i++) {
-    const nome = movs[i].insumo_nome;
-    freq[nome] = (freq[nome] ?? 0) + 1;
+  from = 0;
+  for (let guard = 0; guard < 500; guard++) {
+    const { data } = await supabase
+      .from('movimentacoes')
+      .select('insumo_nome')
+      .eq('tipo', 'saida')
+      .range(from, from + PAGE - 1);
+    if (!data || data.length === 0) break;
+    for (let i = 0; i < data.length; i++) {
+      const nome = data[i].insumo_nome;
+      freq[nome] = (freq[nome] ?? 0) + 1;
+    }
+    if (data.length < PAGE) break;
+    from += PAGE;
   }
+
   const insumoMaisUtilizado =
     Object.entries(freq).sort((a, b) => b[1] - a[1])[0]?.[0] ?? '—';
 

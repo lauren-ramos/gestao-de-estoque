@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   View,
   Text,
@@ -19,12 +19,14 @@ import { Card } from '../src/components/Card';
 import { FormField } from '../src/components/FormField';
 import { AppButton } from '../src/components/AppButton';
 import { Colors } from '../src/constants/colors';
-import { createMovimentacao } from '../src/services/database';
-import { sincronizarMovimentoLegado as sincronizarMovimento } from '../src/services/sienge';
-import { getInsumosFromSienge, type SiengeResource } from '../src/services/sienge';
-import type { MovementType } from '../src/types';
+import { createMovimentacao, getInsumos } from '../src/services/database';
+import type { Insumo, MovementType } from '../src/types';
 
 type Tab = MovementType;
+
+function insumoDisplayName(ins: Insumo): string {
+  return ins.detalhe ? `${ins.nome} - ${ins.detalhe}` : ins.nome;
+}
 
 export default function NovoRegistroScreen() {
   const router = useRouter();
@@ -32,16 +34,16 @@ export default function NovoRegistroScreen() {
 
   const [tab, setTab] = useState<Tab>('entrada');
   const [insumoQuery, setInsumoQuery] = useState(paramNome ?? '');
-  const [suggestions, setSuggestions] = useState<SiengeResource[]>([]);
-  const [allInsumos, setAllInsumos] = useState<SiengeResource[]>([]);
-  const [selectedInsumo, setSelectedInsumo] = useState<SiengeResource | null>(null);
+  const [suggestions, setSuggestions] = useState<Insumo[]>([]);
+  const [allInsumos, setAllInsumos] = useState<Insumo[]>([]);
+  const [selectedInsumo, setSelectedInsumo] = useState<Insumo | null>(null);
   const [detalhe, setDetalhe] = useState('');
   const [data, setData] = useState('');
   const [quantidade, setQuantidade] = useState('');
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
-    getInsumosFromSienge().then(setAllInsumos).catch(() => {});
+    getInsumos().then(setAllInsumos).catch(() => {});
   }, []);
 
   function handleInsumoChange(text: string) {
@@ -51,10 +53,9 @@ export default function NovoRegistroScreen() {
       const q = text.toLowerCase().trim();
       const filtered = allInsumos.filter(
         (r) =>
-          r.name.toLowerCase().includes(q) ||
-          r.code.includes(q) ||
-          String(r.resourceId).includes(q) ||
-          (r.detailId != null && String(r.detailId).includes(q)),
+          r.nome.toLowerCase().includes(q) ||
+          (r.detalhe ?? '').toLowerCase().includes(q) ||
+          (r.sienge_code ?? '').includes(q),
       );
       setSuggestions(filtered.slice(0, 8));
     } else {
@@ -62,8 +63,8 @@ export default function NovoRegistroScreen() {
     }
   }
 
-  function selectSuggestion(resource: SiengeResource) {
-    setInsumoQuery(resource.name);
+  function selectSuggestion(resource: Insumo) {
+    setInsumoQuery(insumoDisplayName(resource));
     setSelectedInsumo(resource);
     setSuggestions([]);
   }
@@ -84,14 +85,6 @@ export default function NovoRegistroScreen() {
         data: dateValue,
         observacao: detalhe.trim() || undefined,
       });
-
-      await sincronizarMovimento({
-        codigoInsumo: insumoQuery.trim(),
-        descricao: detalhe.trim(),
-        tipo: tab,
-        quantidade: parseFloat(quantidade),
-        data: dateValue,
-      }).catch(() => {});
 
       Alert.alert('Salvo!', 'Registro salvo com sucesso.', [
         { text: 'OK', onPress: () => router.back() },
@@ -159,8 +152,12 @@ export default function NovoRegistroScreen() {
 
               {selectedInsumo && (
                 <View style={styles.selectedChip}>
-                  <Text style={styles.selectedCode}>Cód. {selectedInsumo.code}</Text>
-                  <Text style={styles.selectedUnit}>{selectedInsumo.unit}</Text>
+                  <Text style={styles.selectedCode}>
+                    Cód. {selectedInsumo.sienge_code ?? '—'}
+                  </Text>
+                  <Text style={styles.selectedUnit}>
+                    Qtd: {selectedInsumo.quantidade_atual ?? 0}
+                  </Text>
                 </View>
               )}
 
@@ -168,14 +165,16 @@ export default function NovoRegistroScreen() {
                 <View style={styles.dropdown}>
                   {suggestions.map((item) => (
                     <TouchableOpacity
-                      key={item.code}
+                      key={item.id}
                       style={styles.suggestionItem}
                       onPress={() => selectSuggestion(item)}
                       activeOpacity={0.7}
                     >
-                      <Text style={styles.suggestionCode}>{item.code}</Text>
-                      <Text style={styles.suggestionName} numberOfLines={1}>{item.name}</Text>
-                      <Text style={styles.suggestionQtd}>{item.quantity} {item.unit}</Text>
+                      <Text style={styles.suggestionCode}>{item.sienge_code ?? '—'}</Text>
+                      <Text style={styles.suggestionName} numberOfLines={1}>
+                        {insumoDisplayName(item)}
+                      </Text>
+                      <Text style={styles.suggestionQtd}>{item.quantidade_atual ?? 0}</Text>
                     </TouchableOpacity>
                   ))}
                 </View>

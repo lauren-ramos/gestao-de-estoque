@@ -15,41 +15,40 @@ import { Card } from '../../src/components/Card';
 import { Colors } from '../../src/constants/colors';
 import {
   getMovimentacoesBySiengeResource,
+  getInsumosByResourceId,
   syncSiengeMovimentos,
 } from '../../src/services/database';
 import {
-  getInsumosFromSienge,
-  getResourceDetails,
   getSiengeMovimentos,
-  type SiengeResource,
 } from '../../src/services/sienge';
-import type { Movimentacao } from '../../src/types';
+import type { Insumo, Movimentacao } from '../../src/types';
 
 const PAGE_SIZE = 15;
 
 export default function InsumoDetalheScreen() {
   const router = useRouter();
-  const { id, nome } = useLocalSearchParams<{ id: string; nome: string }>();
+  const { id, nome } = useLocalSearchParams<{ id: string; nome: string; fromDb?: string }>();
   const resourceId = Number(id);
 
-  const [details, setDetails] = useState<SiengeResource[]>([]);
+  const [details, setDetails] = useState<Insumo[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     async function load() {
-      await getInsumosFromSienge();
-      setDetails(getResourceDetails(resourceId));
+      // Busca detalhes do banco de dados
+      const data = await getInsumosByResourceId(resourceId);
+      setDetails(data);
       setLoading(false);
     }
     load();
   }, [resourceId]);
 
   const renderItem = useCallback(
-    ({ item }: { item: SiengeResource }) => (
+    ({ item }: { item: Insumo }) => (
       <DetailRow
         detail={item}
         onRegister={() =>
-          router.push({ pathname: '/novo-registro', params: { insumoNome: item.name } })
+          router.push({ pathname: '/novo-registro', params: { insumoNome: item.nome } })
         }
       />
     ),
@@ -87,7 +86,7 @@ export default function InsumoDetalheScreen() {
         <Card style={styles.card} padding={0}>
           <FlatList
             data={details}
-            keyExtractor={(item) => item.code}
+            keyExtractor={(item) => item.id}
             renderItem={renderItem}
             ItemSeparatorComponent={renderSeparator}
             ListEmptyComponent={
@@ -109,7 +108,7 @@ function DetailRow({
   detail,
   onRegister,
 }: {
-  detail: SiengeResource;
+  detail: Insumo;
   onRegister: () => void;
 }) {
   const [expanded, setExpanded] = useState(false);
@@ -121,24 +120,24 @@ function DetailRow({
   const visibleMovs = movs.slice(0, page * PAGE_SIZE);
   const hasMore = visibleMovs.length < movs.length;
 
+  const resourceId = detail.sienge_resource_id ?? 0;
+  const detailId = detail.sienge_detail_id ?? null;
+
   const loadFromDB = useCallback(async () => {
     const dbData = await getMovimentacoesBySiengeResource(
-      detail.resourceId,
-      detail.detailId,
+      resourceId,
+      detailId,
     );
     return dbData;
-  }, [detail.resourceId, detail.detailId]);
+  }, [resourceId, detailId]);
 
   const refreshFromSienge = useCallback(async () => {
+    if (!resourceId) return;
     setRefreshing(true);
     try {
-      const fresh = await getSiengeMovimentos(detail.resourceId, detail.detailId);
-      await syncSiengeMovimentos(fresh, detail.name, detail.resourceId, detail.detailId);
-      // Recarrega do banco após sync
-      const updated = await getMovimentacoesBySiengeResource(
-        detail.resourceId,
-        detail.detailId,
-      );
+      const fresh = await getSiengeMovimentos(resourceId, detailId);
+      await syncSiengeMovimentos(fresh, detail.nome, resourceId, detailId);
+      const updated = await getMovimentacoesBySiengeResource(resourceId, detailId);
       setMovs(updated);
       setPage(1);
     } catch (err) {
@@ -146,7 +145,7 @@ function DetailRow({
     } finally {
       setRefreshing(false);
     }
-  }, [detail]);
+  }, [resourceId, detailId, detail.nome]);
 
   const toggleExpand = useCallback(async () => {
     const next = !expanded;
@@ -154,21 +153,17 @@ function DetailRow({
     if (next && movs.length === 0) {
       setLoadingMovs(true);
       try {
-        // 1. Banco primeiro (instantâneo, todos os anos)
         const dbData = await loadFromDB();
         setMovs(dbData);
         setPage(1);
         setLoadingMovs(false);
 
-        // 2. Se banco vazio, vai direto ao Sienge
-        if (dbData.length === 0) {
+        // Se banco vazio e tem ID Sienge, busca do Sienge
+        if (dbData.length === 0 && resourceId) {
           setRefreshing(true);
-          const fresh = await getSiengeMovimentos(detail.resourceId, detail.detailId);
-          await syncSiengeMovimentos(fresh, detail.name, detail.resourceId, detail.detailId);
-          const saved = await getMovimentacoesBySiengeResource(
-            detail.resourceId,
-            detail.detailId,
-          );
+          const fresh = await getSiengeMovimentos(resourceId, detailId);
+          await syncSiengeMovimentos(fresh, detail.nome, resourceId, detailId);
+          const saved = await getMovimentacoesBySiengeResource(resourceId, detailId);
           setMovs(saved);
           setPage(1);
           setRefreshing(false);
@@ -179,25 +174,28 @@ function DetailRow({
         setRefreshing(false);
       }
     }
-  }, [expanded, movs.length, detail, loadFromDB]);
+  }, [expanded, movs.length, resourceId, detailId, detail.nome, loadFromDB]);
+
+  const displayCode = detailId != null
+    ? `${resourceId}.${detailId}`
+    : resourceId
+    ? String(resourceId)
+    : detail.sienge_code ?? '—';
 
   return (
     <View>
       {/* Cabeçalho do detalhe */}
       <TouchableOpacity style={styles.detailHeader} onPress={toggleExpand} activeOpacity={0.7}>
         <View style={styles.detailLeft}>
-          <Text style={styles.detailCode}>
-            {detail.detailId != null
-              ? `${detail.resourceId}.${detail.detailId}`
-              : String(detail.resourceId)}
-          </Text>
+          <Text style={styles.detailCode}>{displayCode}</Text>
           <Text style={styles.detailDesc} numberOfLines={1}>
-            {detail.detailDescription ?? detail.resourceName}
+            {detail.detalhe ?? detail.nome}
           </Text>
         </View>
         <Text style={styles.detailQty}>
-          {detail.quantity % 1 === 0 ? detail.quantity : detail.quantity.toFixed(2)}{' '}
-          <Text style={styles.detailUnit}>{detail.unit}</Text>
+          {(detail.quantidade_atual ?? 0) % 1 === 0
+            ? detail.quantidade_atual ?? 0
+            : (detail.quantidade_atual ?? 0).toFixed(2)}
         </Text>
         <TouchableOpacity
           onPress={onRegister}

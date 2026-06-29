@@ -7,6 +7,7 @@ export interface Insumo {
   quantidade_atual: number;
   sienge_resource_id?: number;
   sienge_detail_id?: number;
+  sienge_code?: string;
   created_at: string;
   updated_at: string;
 }
