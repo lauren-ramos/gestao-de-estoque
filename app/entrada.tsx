@@ -20,7 +20,7 @@ import { AppButton } from '../src/components/AppButton';
 import { Colors } from '../src/constants/colors';
 import { createMovimentacao } from '../src/services/database';
 import { uploadFile } from '../src/services/storage';
-import { sincronizarMovimento } from '../src/services/sienge';
+import { sincronizarMovimentoLegado as sincronizarMovimento } from '../src/services/sienge';
 
 export default function EntradaScreen() {
   const router = useRouter();
@@ -128,7 +128,7 @@ export default function EntradaScreen() {
             <View style={styles.row}>
               <FilePicker label="Foto" mode="photo" onChange={setFotoUri} />
               <View style={styles.spacer} />
-              <FilePicker label="Nota Fiscal" mode="document" onChange={setNotaUri} />
+              <FilePicker label="Nota Fiscal" mode="photo" onChange={setNotaUri} />
             </View>
 
             <FormField label="Recebido por" value={recebidoPor} onChangeText={setRecebidoPor} placeholder="Nome do responsável" />

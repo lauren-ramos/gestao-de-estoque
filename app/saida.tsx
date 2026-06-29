@@ -20,7 +20,7 @@ import { AppButton } from '../src/components/AppButton';
 import { Colors } from '../src/constants/colors';
 import { createMovimentacao } from '../src/services/database';
 import { uploadFile } from '../src/services/storage';
-import { sincronizarMovimento } from '../src/services/sienge';
+import { sincronizarMovimentoLegado as sincronizarMovimento } from '../src/services/sienge';
 
 export default function SaidaScreen() {
   const router = useRouter();

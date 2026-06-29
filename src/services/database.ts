@@ -8,6 +8,7 @@ import type {
   DashboardStats,
   WeeklyData,
 } from '../types';
+import type { SiengeResource, SiengeMovimentacao } from './sienge';
 
 // ─── Insumos ──────────────────────────────────────────────────────────────────
 
@@ -32,7 +33,7 @@ export async function upsertInsumo(insumo: Partial<Insumo>): Promise<Insumo> {
 
 // ─── Movimentações ────────────────────────────────────────────────────────────
 
-export async function getMovimentacoes(limit = 50): Promise<Movimentacao[]> {
+export async function getMovimentacoes(limit = 15): Promise<Movimentacao[]> {
   const { data, error } = await supabase
     .from('movimentacoes')
     .select('*')
@@ -40,6 +41,47 @@ export async function getMovimentacoes(limit = 50): Promise<Movimentacao[]> {
     .limit(limit);
   if (error) throw error;
   return data ?? [];
+}
+
+// Busca movimentações do banco por resourceId/detailId do Sienge (após sync)
+export async function getMovimentacoesBySiengeResource(
+  resourceId: number,
+  detailId: number | null,
+): Promise<Movimentacao[]> {
+  let query = supabase
+    .from('movimentacoes')
+    .select('*')
+    .eq('sienge_resource_id', resourceId)
+    .order('data', { ascending: false });
+  if (detailId != null) {
+    query = query.eq('sienge_detail_id', detailId);
+  }
+  const { data, error } = await query;
+  if (error) throw error;
+  return data ?? [];
+}
+
+export async function getMovimentacoesByInsumoNome(nome: string): Promise<Movimentacao[]> {
+  const { data, error } = await supabase
+    .from('movimentacoes')
+    .select('*')
+    .eq('insumo_nome', nome)
+    .order('data', { ascending: false });
+  if (error) throw error;
+  return data ?? [];
+}
+
+export async function getUltimasMovimentacoes(): Promise<Record<string, string>> {
+  const { data, error } = await supabase
+    .from('movimentacoes')
+    .select('insumo_nome, data')
+    .order('data', { ascending: false });
+  if (error) throw error;
+  const map: Record<string, string> = {};
+  for (const m of data ?? []) {
+    if (!map[m.insumo_nome]) map[m.insumo_nome] = m.data;
+  }
+  return map;
 }
 
 export async function createMovimentacao(
@@ -106,6 +148,49 @@ export async function relatarErroOC(erro: Omit<ErroOC, 'id' | 'created_at'>): Pr
   return data;
 }
 
+// ─── Sync Sienge → Supabase ───────────────────────────────────────────────────
+
+export async function syncSiengeInsumos(resources: SiengeResource[]): Promise<void> {
+  if (resources.length === 0) return;
+  const rows = resources.map((r) => ({
+    nome: r.resourceName,
+    detalhe: r.detailDescription ?? undefined,
+    quantidade_atual: r.quantity,
+    sienge_resource_id: r.resourceId,
+    sienge_detail_id: r.detailId,
+    sienge_code: r.code,  // "33" ou "33.2" — chave única não-nula
+  }));
+  const { error } = await supabase
+    .from('insumos')
+    .upsert(rows, { onConflict: 'sienge_code' });
+  if (error) console.warn('[DB] syncSiengeInsumos:', error.message);
+}
+
+export async function syncSiengeMovimentos(
+  movs: SiengeMovimentacao[],
+  insumoNome: string,
+  resourceId: number,
+  detailId: number | null,
+): Promise<void> {
+  if (movs.length === 0) return;
+  const rows = movs.map((m) => ({
+    // insumo_id null para não disparar o trigger de quantidade (Sienge é fonte da verdade)
+    insumo_id: null,
+    insumo_nome: insumoNome,
+    tipo: m.tipo,
+    quantidade: m.quantidade,
+    data: m.data,
+    observacao: [m.documento, m.fornecedor].filter(Boolean).join(' — ') || undefined,
+    sienge_movement_id: m.id,
+    sienge_resource_id: resourceId,
+    sienge_detail_id: detailId,
+  }));
+  const { error } = await supabase
+    .from('movimentacoes')
+    .upsert(rows, { onConflict: 'sienge_movement_id', ignoreDuplicates: true });
+  if (error) console.warn('[DB] syncSiengeMovimentos:', error.message);
+}
+
 // ─── Dashboard ────────────────────────────────────────────────────────────────
 
 export async function getDashboardStats(): Promise<DashboardStats> {
@@ -113,25 +198,31 @@ export async function getDashboardStats(): Promise<DashboardStats> {
     supabase.from('insumos').select('id, nome, quantidade_atual'),
     supabase
       .from('movimentacoes')
-      .select('insumo_nome')
-      .order('created_at', { ascending: false }),
+      .select('insumo_nome, tipo')
+      .eq('tipo', 'saida'),
   ]);
 
   const insumos = insumosRes.data ?? [];
   const movs = movRes.data ?? [];
 
   const totalInsumos = insumos.length;
-  const produtosNoEstoque = insumos.filter((i) => i.quantidade_atual > 0).length;
 
-  // most used insumo by movement count
+  // Soma total das quantidades em estoque
+  let totalQtd = 0;
+  for (let i = 0; i < insumos.length; i++) {
+    totalQtd += insumos[i].quantidade_atual || 0;
+  }
+
+  // Insumo com mais saídas (por número de movimentações, não por quantidade)
   const freq: Record<string, number> = {};
-  for (const m of movs) {
-    freq[m.insumo_nome] = (freq[m.insumo_nome] ?? 0) + 1;
+  for (let i = 0; i < movs.length; i++) {
+    const nome = movs[i].insumo_nome;
+    freq[nome] = (freq[nome] ?? 0) + 1;
   }
   const insumoMaisUtilizado =
     Object.entries(freq).sort((a, b) => b[1] - a[1])[0]?.[0] ?? '—';
 
-  return { totalInsumos, insumoMaisUtilizado, produtosNoEstoque };
+  return { totalInsumos, insumoMaisUtilizado, produtosNoEstoque: totalQtd };
 }
 
 export async function getWeeklyData(): Promise<WeeklyData> {

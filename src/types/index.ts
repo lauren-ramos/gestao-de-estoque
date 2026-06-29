@@ -5,6 +5,8 @@ export interface Insumo {
   nome: string;
   detalhe?: string;
   quantidade_atual: number;
+  sienge_resource_id?: number;
+  sienge_detail_id?: number;
   created_at: string;
   updated_at: string;
 }

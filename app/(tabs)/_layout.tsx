@@ -30,12 +30,12 @@ export default function TabsLayout() {
       }}
     >
       <Tabs.Screen
-        name="index"
-        options={{ title: 'Início', tabBarIcon: tabIcon('view-dashboard-outline') }}
-      />
-      <Tabs.Screen
         name="insumos"
         options={{ title: 'Insumos', tabBarIcon: tabIcon('archive-outline') }}
+      />
+      <Tabs.Screen
+        name="index"
+        options={{ title: 'Início', tabBarIcon: tabIcon('view-dashboard-outline') }}
       />
       <Tabs.Screen
         name="movimentacao"

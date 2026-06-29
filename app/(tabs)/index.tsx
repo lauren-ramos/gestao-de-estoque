@@ -5,21 +5,16 @@ import {
   ScrollView,
   StyleSheet,
   TouchableOpacity,
-  Dimensions,
   RefreshControl,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { BarChart } from 'react-native-chart-kit';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { AppHeader } from '../../src/components/AppHeader';
 import { Card } from '../../src/components/Card';
 import { Colors } from '../../src/constants/colors';
 import { getDashboardStats, getWeeklyData } from '../../src/services/database';
 import type { DashboardStats, WeeklyData } from '../../src/types';
-
-const { width } = Dimensions.get('window');
-const CHART_WIDTH = width - 64;
 
 export default function DashboardScreen() {
   const router = useRouter();
@@ -33,7 +28,7 @@ export default function DashboardScreen() {
       setStats(s);
       setWeekly(w);
     } catch {
-      // Supabase not configured yet — show empty state
+      // Supabase not configured yet
     }
   }, []);
 
@@ -45,20 +40,6 @@ export default function DashboardScreen() {
     setRefreshing(false);
   }, [load]);
 
-  const chartData = weekly
-    ? {
-        labels: weekly.labels,
-        datasets: [
-          {
-            data: weekly.entradas.map((v, i) => v + (weekly.saidas[i] ?? 0)),
-            colors: weekly.entradas.map((_, i) =>
-              () => i === weekly.entradas.length - 1 ? Colors.primary : Colors.primaryLight,
-            ),
-          },
-        ],
-      }
-    : { labels: ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun'], datasets: [{ data: [0, 0, 0, 0, 0, 0] }] };
-
   return (
     <SafeAreaView style={styles.safe} edges={['top']}>
       <AppHeader userName="" />
@@ -69,37 +50,28 @@ export default function DashboardScreen() {
       >
         {/* Stats row */}
         <View style={styles.statsRow}>
-          <StatCard title="Insumos Cadastrados" value={stats?.totalInsumos} />
+          <StatCard title="Insumos cadastrados" value={stats?.totalInsumos} />
           <StatCard title="Insumo mais utilizado" value={stats?.insumoMaisUtilizado} small />
         </View>
         <Card style={styles.statsFull}>
-          <Text style={styles.statLabel}>Produtos no estoque</Text>
-          <Text style={styles.statValue}>{stats?.produtosNoEstoque ?? '—'}</Text>
+          <Text style={styles.statLabel}>Quantidade total em estoque</Text>
+          <Text style={styles.statValue}>
+            {stats != null
+              ? stats.produtosNoEstoque % 1 === 0
+                ? stats.produtosNoEstoque
+                : stats.produtosNoEstoque.toFixed(2)
+              : '—'}
+          </Text>
         </Card>
 
-        {/* Weekly chart */}
+        {/* Stacked bar chart: entradas vs saídas por mês */}
         <Card style={styles.chartCard} padding={16}>
-          <Text style={styles.sectionTitle}>Estatística semanal do estoque</Text>
-          <BarChart
-            data={chartData}
-            width={CHART_WIDTH}
-            height={200}
-            yAxisLabel=""
-            yAxisSuffix=""
-            chartConfig={{
-              backgroundGradientFrom: Colors.white,
-              backgroundGradientTo: Colors.white,
-              decimalPlaces: 0,
-              color: (opacity = 1) => `rgba(139, 108, 246, ${opacity})`,
-              labelColor: () => Colors.textMuted,
-              barPercentage: 0.5,
-            }}
-            style={{ borderRadius: 8, marginTop: 8 }}
-            showBarTops={false}
-            fromZero
-            withCustomBarColorFromData
-            flatColor
-          />
+          <Text style={styles.sectionTitle}>Estatística mensal do estoque</Text>
+          {weekly ? (
+            <StackedBarChart data={weekly} />
+          ) : (
+            <View style={styles.chartPlaceholder} />
+          )}
         </Card>
 
         {/* Quick access */}
@@ -111,15 +83,76 @@ export default function DashboardScreen() {
           variant="light"
         />
         <QuickCard
-          title="Movimentação de estoque"
+          title="Movimentações"
           icon="truck-delivery-outline"
           onPress={() => router.push('/(tabs)/movimentacao')}
-          variant="purple"
+          variant="light"
         />
       </ScrollView>
     </SafeAreaView>
   );
 }
+
+// ─── Gráfico de barras empilhadas ─────────────────────────────────────────────
+
+function StackedBarChart({ data }: { data: WeeklyData }) {
+  const BAR_MAX_H = 120;
+  let maxVal = 1;
+  for (let i = 0; i < data.labels.length; i++) {
+    const total = (data.entradas[i] ?? 0) + (data.saidas[i] ?? 0);
+    if (total > maxVal) maxVal = total;
+  }
+
+  return (
+    <View>
+      {/* Legenda */}
+      <View style={styles.legendRow}>
+        <View style={styles.legendItem}>
+          <View style={[styles.legendDot, { backgroundColor: '#22c55e' }]} />
+          <Text style={styles.legendText}>Entradas</Text>
+        </View>
+        <View style={styles.legendItem}>
+          <View style={[styles.legendDot, { backgroundColor: '#ef4444' }]} />
+          <Text style={styles.legendText}>Saídas</Text>
+        </View>
+      </View>
+
+      {/* Barras */}
+      <View style={[styles.barsRow, { height: BAR_MAX_H + 24 }]}>
+        {data.labels.map((label, i) => {
+          const e = data.entradas[i] ?? 0;
+          const s = data.saidas[i] ?? 0;
+          const total = e + s;
+          const totalH = maxVal > 0 ? (total / maxVal) * BAR_MAX_H : 0;
+          const entradaH = total > 0 ? (e / total) * totalH : 0;
+          const saidaH = totalH - entradaH;
+
+          return (
+            <View key={label} style={styles.barWrap}>
+              <View style={[styles.barInner, { height: BAR_MAX_H }]}>
+                <View style={{ justifyContent: 'flex-end', flex: 1 }}>
+                  {totalH > 0 && (
+                    <View style={styles.barStack}>
+                      {saidaH > 0 && (
+                        <View style={{ height: saidaH, backgroundColor: '#ef4444' }} />
+                      )}
+                      {entradaH > 0 && (
+                        <View style={{ height: entradaH, backgroundColor: '#22c55e' }} />
+                      )}
+                    </View>
+                  )}
+                </View>
+              </View>
+              <Text style={styles.barLabel}>{label}</Text>
+            </View>
+          );
+        })}
+      </View>
+    </View>
+  );
+}
+
+// ─── Componentes auxiliares ────────────────────────────────────────────────────
 
 function StatCard({
   title,
@@ -177,21 +210,26 @@ const styles = StyleSheet.create({
   statsRow: { flexDirection: 'row', gap: 12, marginBottom: 12 },
   statCard: { flex: 1 },
   statsFull: { marginBottom: 16 },
-  statLabel: {
-    fontSize: 12,
-    color: Colors.textSecondary,
-    fontWeight: '500',
-    marginBottom: 4,
-  },
+  statLabel: { fontSize: 12, color: Colors.textSecondary, fontWeight: '500', marginBottom: 4 },
   statValue: { fontSize: 22, fontWeight: '700', color: Colors.text },
   statValueSm: { fontSize: 14, fontWeight: '600' },
+
   chartCard: { marginBottom: 20 },
-  sectionTitle: {
-    fontSize: 15,
-    fontWeight: '700',
-    color: Colors.text,
-    marginBottom: 12,
-  },
+  chartPlaceholder: { height: 150, backgroundColor: Colors.background, borderRadius: 8 },
+  sectionTitle: { fontSize: 15, fontWeight: '700', color: Colors.text, marginBottom: 12 },
+
+  // Chart
+  legendRow: { flexDirection: 'row', gap: 16, marginBottom: 12 },
+  legendItem: { flexDirection: 'row', alignItems: 'center', gap: 5 },
+  legendDot: { width: 10, height: 10, borderRadius: 2 },
+  legendText: { fontSize: 11, color: Colors.textSecondary },
+  barsRow: { flexDirection: 'row', alignItems: 'flex-end' },
+  barWrap: { flex: 1, alignItems: 'center' },
+  barInner: { width: '55%', justifyContent: 'flex-end' },
+  barStack: { borderRadius: 4, overflow: 'hidden' },
+  barLabel: { fontSize: 10, color: Colors.textMuted, marginTop: 4 },
+
+  // Quick cards
   quickCard: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -216,11 +254,6 @@ const styles = StyleSheet.create({
     marginRight: 12,
   },
   quickIconPurple: { backgroundColor: 'rgba(255,255,255,0.2)' },
-  quickTitle: {
-    flex: 1,
-    fontSize: 15,
-    fontWeight: '600',
-    color: Colors.text,
-  },
+  quickTitle: { flex: 1, fontSize: 15, fontWeight: '600', color: Colors.text },
   quickTitleLight: { color: Colors.white },
 });
